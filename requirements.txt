@@ -1,0 +1,4 @@
+git+https://github.com/tensorflow/docs
+matplotlib==3.5.2
+imageio
+pbpstats
