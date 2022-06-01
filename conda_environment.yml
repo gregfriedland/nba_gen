@@ -2,6 +2,7 @@ name: apple_tensorflow
 channels:
   - conda-forge
   - nodefaults
+  - pytorch
 dependencies:
   - absl-py
   - astunparse
@@ -26,4 +27,6 @@ dependencies:
   - typing_extensions
   - wheel
   - wrapt
-  
+  - pytorch
+  - torchvision
+  - pandas

@@ -1,47 +1,107 @@
 from tensorflow import keras
 from keras import layers
-
+import sys
+import pandas as pd
 from tensorflow_docs.vis import embed
-import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 import imageio
 
+TARGET_COL = "fg:is_made"
+
+
+def get_normalization_layer(name, dataset):
+  # Create a Normalization layer for the feature.
+  normalizer = layers.Normalization(axis=None)
+
+  # Prepare a Dataset that only yields the feature.
+  feature_ds = dataset.map(lambda x, y: x[name])
+
+  # Learn the statistics of the data.
+  normalizer.adapt(feature_ds)
+
+  return normalizer
+
+
+def get_category_encoding_layer(name, dataset, dtype, max_tokens=None):
+  # Create a layer that turns strings into integer indices.
+  if dtype == 'string':
+    index = layers.StringLookup(max_tokens=max_tokens)
+  # Otherwise, create a layer that turns integer values into integer indices.
+  else:
+    index = layers.IntegerLookup(max_tokens=max_tokens)
+
+  # Prepare a `tf.data.Dataset` that only yields the feature.
+  feature_ds = dataset.map(lambda x, y: x[name])
+
+  # Learn the set of possible values and assign them a fixed integer index.
+  index.adapt(feature_ds)
+
+  # Encode the integer indices.
+  encoder = layers.CategoryEncoding(num_tokens=index.vocabulary_size())
+
+  # Apply multi-hot encoding to the indices. The lambda function captures the
+  # layer, so you can use them, or include them in the Keras Functional model later.
+  return lambda feature: encoder(index(feature))
+
+
+def df_to_dataset(dataframe, target_col, shuffle=True, batch_size=32):
+    df = dataframe.copy()
+    labels = df.pop(target_col)
+    df = {key: value[:, tf.newaxis] for key, value in dataframe.items()}
+    ds = tf.data.Dataset.from_tensor_slices((dict(df), labels))
+    if shuffle:
+        ds = ds.shuffle(buffer_size=len(dataframe))
+    ds = ds.batch(batch_size)
+    ds = ds.prefetch(batch_size)
+
+    return ds
+
+
+def load_features(df):
+    train_ds = df_to_dataset(df, TARGET_COL, batch_size=batch_size)
+    all_inputs = []
+    encoded_features = []
+    for col_name in df.columns:
+        if df[col_name].dtype == "object":
+            tf_col = tf.keras.Input(shape=(1,), name=col_name, dtype='string')
+            layer = get_category_encoding_layer(name=col_name,
+                                                dataset=train_ds,
+                                                dtype='string',
+                                                max_tokens=5)
+        elif df[col_name].dtype == "bool":
+            tf_col = tf.keras.Input(shape=(1,), name=col_name, dtype='bool')
+            layer = get_category_encoding_layer(name=col_name,
+                                                dataset=train_ds,
+                                                dtype='bool',
+                                                max_tokens=2)
+        else:
+            tf_col = tf.keras.Input(shape=(1,), name=col_name, dtype='float32')
+            layer = get_normalization_layer(col_name, train_ds)
+
+        all_inputs.append(tf_col)
+        encoded_features.append(layer(tf_col))
+    return tf.keras.layers.concatenate(encoded_features)
+
+
 # Constants and hyperparameters
 batch_size = 64
 num_channels = 1
-num_classes = 10
 image_size = 28
 latent_dim = 128
+num_classes = 2
 
-
-# Loading the MNIST dataset and preprocessing it
-# We'll use all the available examples from both the training and test
-# sets.
-(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
-all_digits = np.concatenate([x_train, x_test])
-all_labels = np.concatenate([y_train, y_test])
-
-# Scale the pixel values to [0, 1] range, add a channel dimension to
-# the images, and one-hot encode the labels.
-all_digits = all_digits.astype("float32") / 255.0
-all_digits = np.reshape(all_digits, (-1, 28, 28, 1))
-all_labels = keras.utils.to_categorical(all_labels, 10)
-
-# Create tf.data.Dataset.
-dataset = tf.data.Dataset.from_tensor_slices((all_digits, all_labels))
-dataset = dataset.shuffle(buffer_size=1024).batch(batch_size)
-
-print(f"Shape of training images: {all_digits.shape}")
-print(f"Shape of training labels: {all_labels.shape}")
+stats_file = sys.argv[1]
+stats_df = pd.read_csv(stats_file)
+stats_df = stats_df[stats_df.columns[-15:]]
+print(f"Loaded data with {len(stats_df)} rows")
+all_features = load_features(stats_df)
 
 # Calculating the number of input channel for the generator and discriminator
 generator_in_channels = latent_dim + num_classes
 discriminator_in_channels = num_channels + num_classes
 print(generator_in_channels, discriminator_in_channels)
 
-
-# Creating the discriminator and generator
 # Create the discriminator.
 discriminator = keras.Sequential(
     [
@@ -73,6 +133,7 @@ generator = keras.Sequential(
     ],
     name="generator",
 )
+
 
 # Creating a ConditionalGAN model
 class ConditionalGAN(keras.Model):
@@ -179,7 +240,7 @@ cond_gan.compile(
     loss_fn=keras.losses.BinaryCrossentropy(from_logits=True),
 )
 
-cond_gan.fit(dataset, epochs=20)
+cond_gan.fit(all_features, epochs=20)
 
 # Interpolating between classes with the trained generator
 # We first extract the trained generator from our Conditiona GAN.

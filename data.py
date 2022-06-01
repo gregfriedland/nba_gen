@@ -8,18 +8,34 @@ import shutil
 import sys
 import zipfile
 import pandas as pd
+import numpy as np
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, Iterable
+from typing import List, Optional, Dict, Any
 
 import requests
 import logging
 from pbpstats.client import Client
 from enum import Enum
 
-DEFENSE_PLAYER_KEY = 2
+NO_PLAYER = "na"
+ON_DEFENSE = "def"
+ON_OFFENSE = "off"
+NOT_PLAYING = "na"
+PLAYER_ID_PREFIX = "pid-"
+TEAM_ID_PREFIX = "t"
 
-OFFENSE_PLAYER_KEY = 1
+
+def player_id_from_int(player_id: int) -> str:
+    return f"{PLAYER_ID_PREFIX}{player_id}"
+
+
+def team_id_from_int(team_id: int) -> str:
+    return f"{TEAM_ID_PREFIX}{team_id}"
+
+
+def int_from_team_id(team_id: str) -> int:
+    return int(team_id.lstrip(TEAM_ID_PREFIX))
 
 
 def construct_year_string(year):
@@ -150,7 +166,7 @@ class Event:
         self.pbpstats_event = pbpstats_event
         delattr(self.pbpstats_event, "fouls_to_give")  # prevent pickle dump failure
         self.type = EventType(pbpstats_event.__class__.__name__)
-        self._lineup_ids = {str(id): lineup for id, lineup in self.pbpstats_event.lineup_ids.items()}
+        self._lineup_ids = {team_id_from_int(id): lineup for id, lineup in self.pbpstats_event.lineup_ids.items()}
         self._home_team_id = home_team_id
 
     @property
@@ -182,6 +198,10 @@ class Event:
         return getattr(self.pbpstats_event, "is_blocked", None)
 
     @property
+    def is_assisted(self):
+        return getattr(self.pbpstats_event, "is_assisted", None)
+
+    @property
     def is_rebound(self):
         return self.type == EventType.REBOUND and getattr(self.pbpstats_event, "is_real_rebound", None)
 
@@ -192,68 +212,68 @@ class Event:
     @property
     def player1(self) -> Optional[str]:
         if hasattr(self.pbpstats_event, "player1_id"):
-            return str(self.pbpstats_event.player1_id)
+            return player_id_from_int(self.pbpstats_event.player1_id)
         else:
-            return None
+            return NO_PLAYER
 
     @property
     def player2(self) -> Optional[str]:
         if hasattr(self.pbpstats_event, "player2_id"):
-            return str(self.pbpstats_event.player1_id)
+            return player_id_from_int(self.pbpstats_event.player2_id)
         else:
-            return None
+            return NO_PLAYER
 
     @property
     def player3(self) -> Optional[str]:
         if hasattr(self.pbpstats_event, "player3_id"):
-            return str(self.pbpstats_event.player1_id)
+            return player_id_from_int(self.pbpstats_event.player3_id)
         else:
-            return None
+            return NO_PLAYER
 
     @property
     def shooter(self) -> Optional[str]:
-        return self.player1 if self.is_fga else None
+        return self.player1 if self.is_fga else NO_PLAYER
 
     @property
     def assister(self) -> Optional[str]:
-        return getattr(self.pbpstats_event, "is_assisted", None)
+        return self.player2 if self.is_assisted else NO_PLAYER
 
     @property
     def blocker(self) -> Optional[str]:
-        return self.player3 if self.is_blocked else None
+        return self.player3 if self.is_blocked else NO_PLAYER
 
     @property
     def defender(self) -> Optional[str]:
-        return self.player3 if self.is_fga else None
+        return self.player3 if self.is_fga else NO_PLAYER
 
     @property
     def fouler(self):
-        return self.player1 if self.is_foul else None
+        return self.player1 if self.is_foul else NO_PLAYER
 
     @property
     def foulee(self):
-        return self.player3 if self.is_foul else None
+        return self.player3 if self.is_foul else NO_PLAYER
 
     @property
     def stealer(self):
-        return self.player3 if self.is_turnover else None
+        return self.player3 if self.is_turnover else NO_PLAYER
 
     @property
     def turner_over(self):
-        return self.player1 if self.is_turnover else None
+        return self.player1 if self.is_turnover else NO_PLAYER
 
     @property
     def rebounder(self):
-        return self.player1 if self.is_rebound else None
+        return self.player1 if self.is_rebound else NO_PLAYER
 
     @property
     def ejectee(self):
-        return self.player1 if self.is_ejection else None
+        return self.player1 if self.is_ejection else NO_PLAYER
 
     @property
     def offense_team_id(self) -> Optional[str]:
         if hasattr(self.pbpstats_event, "team_id"):
-            return str(self.pbpstats_event.team_id)
+            return team_id_from_int(self.pbpstats_event.team_id)
         else:
             return None
 
@@ -261,7 +281,7 @@ class Event:
     def defense_team_id(self) -> Optional[str]:
         offense_team_id = self.offense_team_id
         if offense_team_id:
-            team_ids = set(map(str, self.pbpstats_event.current_players.keys()))
+            team_ids = set(map(team_id_from_int, self.pbpstats_event.current_players.keys()))
             team_ids.remove(offense_team_id)
             return team_ids.pop()
         else:
@@ -288,19 +308,19 @@ class Event:
 
     @property
     def offense_player_ids(self) -> Sequence[str]:
-        return self._lineup_ids[self.offense_team_id].split("-")
+        return list(map(player_id_from_int, self._lineup_ids[self.offense_team_id].split("-")))
 
     @property
     def defense_player_ids(self) -> Sequence[str]:
-        return self._lineup_ids[self.defense_team_id].split("-")
+        return list(map(player_id_from_int, self._lineup_ids[self.defense_team_id].split("-")))
 
     @property
     def offense_score(self) -> int:
-        return self.pbpstats_event.score[self.offense_team_id]
+        return self.pbpstats_event.score[int_from_team_id(self.offense_team_id)]
 
     @property
     def defense_score(self) -> int:
-        return self.pbpstats_event.score[self.defense_team_id]
+        return self.pbpstats_event.score[int_from_team_id(self.defense_team_id)]
 
     @property
     def seconds_remaining(self) -> float:
@@ -318,7 +338,7 @@ class Dataset:
 
     @disk_cache()
     @staticmethod
-    def load_from_disk(data_dir: str, years: Sequence[int], season_types: List[str]):
+    def load_from_disk(data_dir: str, years: Sequence[int], season_types: List[str], max_games: Optional[int] = None):
         Dataset.download_pbpstats_data("pbpstats_data.zip", data_dir)
 
         games = []
@@ -336,16 +356,20 @@ class Dataset:
                 }
                 client = Client(settings)
                 season_api = client.Season("nba", year_string, season_type)
-                for pbpstats_game in season_api.games.final_games:
+                pbpstats_games = season_api.games.final_games
+                if max_games:
+                    pbpstats_games = pbpstats_games[:max_games]
+
+                for pbpstats_game in pbpstats_games:
                     logging.debug(f"Loading game: {pbpstats_game['game_id']}")
                     full_pbpstats_game = client.Game(pbpstats_game["game_id"])
                     for player_id, player_name in full_pbpstats_game.boxscore.player_name_map.items():
-                        player_id_to_player[str(player_id)] = Player(player_name, str(player_id))
+                        player_id_to_player[player_id_from_int(player_id)] = Player(player_name, player_id_from_int(player_id))
 
                     game_id = pbpstats_game["game_id"]
                     date = pbpstats_game["date"]
 
-                    teams = [Team(team_item["team_abbreviation"], str(team_item["team_id"]))
+                    teams = [Team(team_item["team_abbreviation"], team_id_from_int(team_item["team_id"]))
                              for team_item in full_pbpstats_game.boxscore.team_items]
                     if teams[0].id == pbpstats_game['home_team_id']:
                         home_team, away_team = teams[0], teams[1]
@@ -383,12 +407,12 @@ class DatasetToTable:
         self._dataset = dataset
         self._player_id_to_name = {pid: p.name for pid, p in self._dataset.player_id_to_player.items()}
         # self._player_name_to_id = {name: id for id, name in self._player_id_to_name.items()}
-        self._player_default_row_data = pd.Series({pid: 0 for pid in self._player_id_to_name.keys()})
+        self._player_default_row_data = pd.Series({pid: NOT_PLAYING for pid in self._player_id_to_name.keys()})
 
     def _event_to_row_data(self, event: Event) -> pd.Series:
         player_row_data = self._player_default_row_data.copy()
-        player_row_data[event.offense_player_ids] = OFFENSE_PLAYER_KEY
-        player_row_data[event.defense_player_ids] = DEFENSE_PLAYER_KEY
+        player_row_data[event.offense_player_ids] = ON_OFFENSE
+        player_row_data[event.defense_player_ids] = ON_DEFENSE
         data = {
              "offense_is_home": event.offense_is_home,
              "offense_score": event.offense_score,
@@ -427,15 +451,19 @@ class DatasetToTable:
         for game in self._dataset.games:
             for event in game.events:
                 if event.type not in self.SKIP_EVENT_TYPES and event.player1:
-                    if event.type == EventType.FIELD_GOAL: # TODO
+                    if event.type == EventType.FIELD_GOAL:  # TODO
                         rows.append(self._event_to_row_data(event))
         df = pd.concat(rows, ignore_index=True, axis=1).T
+        for score_col in [col for col in df.columns if "score" in col]:
+            df[score_col] = df[score_col].astype(np.float32)
 
         # validate
         total_players = len(self._player_default_row_data)
         players_df = df[df.columns[:total_players]]
-        num_players_per_row = (players_df != 0).sum(axis=1)
+        num_players_per_row = (players_df != NOT_PLAYING).sum(axis=1)
         assert (num_players_per_row == 10).all()
+        assert (df.offense_score >= 0).all()
+        assert (df.defense_score >= 0).all()
 
         return df
 
@@ -446,10 +474,11 @@ def main():
     data_dir = sys.argv[1]
     start_year = int(sys.argv[2])
     end_year = int(sys.argv[3])
+    max_games = int(sys.argv[4])
 
-    dataset = Dataset.load_from_disk(data_dir, range(start_year, end_year+1), ["Regular Season"])
+    dataset = Dataset.load_from_disk(data_dir, range(start_year, end_year+1), ["Regular Season"], max_games)
     df = DatasetToTable(dataset).df
-    df.to_csv(f"nba_pbp_{start_year}-{end_year}.csv", index=False)
+    df.to_csv(f"nba_pbp_{start_year}-{end_year}_n{max_games}.csv", index=False)
 
 
 if __name__ == "__main__":
