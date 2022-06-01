@@ -16,7 +16,6 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
 
         self.label_emb = nn.Embedding(n_classes, n_classes)
-        self.example_shape = example_shape
 
         def block(in_feat, out_feat, normalize=True):
             layers = [nn.Linear(in_feat, out_feat)]
@@ -30,16 +29,14 @@ class Generator(nn.Module):
             *block(128, 256),
             *block(256, 512),
             *block(512, 1024),
-            # nn.Linear(1024, int(np.prod(example_shape))),
+            nn.Linear(1024, example_shape[1]),
             nn.Tanh()
         )
 
     def forward(self, noise, labels):
         # Concatenate label embedding and image to produce input
         gen_input = torch.cat((self.label_emb(labels), noise), -1)
-        img = self.model(gen_input)
-        # img = img.view(img.size(0), *self.example_shape)
-        return img
+        return self.model(gen_input)
 
 
 class Discriminator(nn.Module):
@@ -49,7 +46,7 @@ class Discriminator(nn.Module):
         self.label_embedding = nn.Embedding(n_classes, n_classes)
 
         self.model = nn.Sequential(
-            nn.Linear(n_classes + int(np.prod(example_shape)), 512),
+            nn.Linear(n_classes + example_shape[1], 512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(512, 512),
             nn.Dropout(0.4),
@@ -62,7 +59,7 @@ class Discriminator(nn.Module):
 
     def forward(self, img, labels):
         # Concatenate label embedding and image to produce input
-        d_in = torch.cat((img.view(img.size(0), -1), self.label_embedding(labels)), -1)
+        d_in = torch.cat((img, self.label_embedding(labels)), -1)
         validity = self.model(d_in)
         return validity
 
@@ -96,13 +93,13 @@ class PbpDataset(torch.utils.data.Dataset):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
-    parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
+    parser.add_argument("--batch_size", type=int, default=2048, help="size of the batches")
     parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
     parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
     parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
     parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
     parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
-    parser.add_argument("--n_classes", type=int, default=10, help="number of classes for dataset")
+    parser.add_argument("--n_classes", type=int, default=2, help="number of classes for dataset")
     # parser.add_argument("--sample_interval", type=int, default=400, help="interval between image sampling")
     parser.add_argument("data_file", type=argparse.FileType('r'), help="data csv file")
     opt = parser.parse_args()
@@ -123,7 +120,7 @@ def main():
     adversarial_loss = torch.nn.MSELoss()
 
     # Initialize generator and discriminator
-    example_shape = (1, df.shape[1])
+    example_shape = (1, dataset.x.shape[1])
     generator = Generator(opt.n_classes, opt.latent_dim, example_shape)
     discriminator = Discriminator(opt.n_classes, example_shape)
 
@@ -163,10 +160,10 @@ def main():
             gen_labels = Variable(LongTensor(np.random.randint(0, opt.n_classes, batch_size)))
 
             # Generate a fake batch
-            fake = generator(z, gen_labels)
+            gen_imgs = generator(z, gen_labels)
 
             # Loss measures generator's ability to fool the discriminator
-            validity = discriminator(fake, gen_labels)
+            validity = discriminator(gen_imgs, gen_labels)
             g_loss = adversarial_loss(validity, valid)
 
             g_loss.backward()
@@ -183,7 +180,7 @@ def main():
             d_real_loss = adversarial_loss(validity_real, valid)
 
             # Loss for fake examples
-            validity_fake = discriminator(fake.detach(), gen_labels)
+            validity_fake = discriminator(gen_imgs.detach(), gen_labels)
             d_fake_loss = adversarial_loss(validity_fake, fake)
 
             # Total discriminator loss
