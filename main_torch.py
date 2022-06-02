@@ -43,9 +43,20 @@ class Generator(nn.Module):
         g_in = torch.cat((conditions, latent_vector), -1)
         return self.model(g_in)
 
-    # TODO: make this two teams or 10 players
     def fake_conditions(self, batch_size: int) -> torch.LongTensor:
-        return torch.LongTensor(np.random.randint(0, 1, (batch_size, self.condition_size)))
+        """ Generate a fake batch of conditions"""
+        assert self.condition_size % 2 == 0  # must be event
+        all_conditions = []
+        for i in range(batch_size):
+            # pick two different entities (teams) to be on offense/defense
+            # loop over batch_size for now b/c don't know of a np native way to sample
+            # without replacement on one dim only
+            entities = np.random.choice(self.condition_size // 2, size=2, replace=False)
+            entities[1] += self.condition_size // 2
+            conditions = torch.LongTensor(np.zeros(self.condition_size))
+            conditions[entities] = 1
+            all_conditions.append(conditions)
+        return torch.stack(all_conditions)
 
     def fake_latents(self, batch_size: int) -> torch.FloatTensor:
         return torch.FloatTensor(np.random.normal(0, 1, (batch_size, self.latent_dim)))
