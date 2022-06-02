@@ -73,8 +73,8 @@ class PbpDataset(torch.utils.data.Dataset):
             elif col.startswith(PLAYER_ID_PREFIX):
                 on_offense = df[col] == ON_OFFENSE
                 on_defense = df[col] == ON_DEFENSE
-                tensors[col + "_off"] = torch.tensor(on_offense, dtype=torch.long)
-                tensors[col + "_def"] = torch.tensor(on_defense, dtype=torch.long)
+                tensors[col + "_off"] = torch.tensor(on_offense, dtype=torch.bool)
+                tensors[col + "_def"] = torch.tensor(on_defense, dtype=torch.bool)
             elif df[col].dtype == "bool":
                 tensors[col] = torch.tensor(df[col].values, dtype=torch.long)
             else:
@@ -90,53 +90,26 @@ class PbpDataset(torch.utils.data.Dataset):
         return self.x[index, :], self.y[index]
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
-    parser.add_argument("--batch_size", type=int, default=2048, help="size of the batches")
-    parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
-    parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
-    parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
-    parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
-    parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
-    parser.add_argument("--n_classes", type=int, default=2, help="number of classes for dataset")
-    # parser.add_argument("--sample_interval", type=int, default=400, help="interval between image sampling")
-    parser.add_argument("data_file", type=argparse.FileType('r'), help="data csv file")
-    opt = parser.parse_args()
-    print(opt)
+def eval(generator, optimizer_G, opt, gen_checkpoint_file):
+    FloatTensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+    LongTensor = torch.cuda.LongTensor if torch.cuda.is_available() else torch.LongTensor
 
-    cuda = True if torch.cuda.is_available() else False
+    gen_checkpoint = torch.load(gen_checkpoint_file)
+    generator.load_state_dict(gen_checkpoint['model_state_dict'])
+    optimizer_G.load_state_dict(gen_checkpoint['optimizer_state_dict'])
+    generator.eval()
 
-    # Configure data loader
-    df = pd.read_csv(opt.data_file)
-    dataset = PbpDataset(df, "fg:is_made")
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=opt.batch_size,
-        shuffle=True,
-    )
+    for i in range(10000):
+        z = Variable(FloatTensor(np.random.normal(0, 1, (opt.batch_size, opt.latent_dim))))
+        gen_labels = Variable(LongTensor(np.random.randint(0, opt.n_classes, opt.batch_size)))
+        gen_events = generator(z, gen_labels)
+        pass
 
-    # Loss functions
-    adversarial_loss = torch.nn.MSELoss()
 
-    # Initialize generator and discriminator
-    example_shape = (1, dataset.x.shape[1])
-    generator = Generator(opt.n_classes, opt.latent_dim, example_shape)
-    discriminator = Discriminator(opt.n_classes, example_shape)
+def train(adversarial_loss, dataloader, discriminator, generator, opt, optimizer_D, optimizer_G, checkpoint_files):
+    FloatTensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+    LongTensor = torch.cuda.LongTensor if torch.cuda.is_available() else torch.LongTensor
 
-    if cuda:
-        generator.cuda()
-        discriminator.cuda()
-        adversarial_loss.cuda()
-
-    # Optimizers
-    optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-
-    FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
-    LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
-
-    # train
     for epoch in range(opt.n_epochs):
         for i, (rows, labels) in enumerate(dataloader):
             batch_size = rows.shape[0]
@@ -193,10 +166,68 @@ def main():
                 "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
                 % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
             )
+    torch.save({
+        'epoch': opt.n_epochs,
+        'model_state_dict': generator.state_dict(),
+        'optimizer_state_dict': optimizer_G.state_dict(),
+    }, checkpoint_files["generator"])
+    torch.save({
+        'epoch': opt.n_epochs,
+        'model_state_dict': discriminator.state_dict(),
+        'optimizer_state_dict': optimizer_D.state_dict(),
+    }, checkpoint_files["discriminator"])
 
-            # batches_done = epoch * len(dataloader) + i
-            # if batches_done % opt.sample_interval == 0:
-            #     sample_image(n_row=10, batches_done=batches_done)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
+    parser.add_argument("--batch_size", type=int, default=4096, help="size of the batches")
+    parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
+    parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
+    parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
+    parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
+    parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
+    parser.add_argument("--n_classes", type=int, default=2, help="number of classes for dataset")
+    parser.add_argument("mode", type=str, choices=["train", "eval"], help="train or eval mode")
+    parser.add_argument("data_file", type=argparse.FileType('r'), help="data csv file")
+    opt = parser.parse_args()
+    print(opt)
+
+    # Configure data loader
+    df = pd.read_csv(opt.data_file)
+    dataset = PbpDataset(df, "fg:is_made")
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=opt.batch_size,
+        shuffle=True,
+    )
+
+    # Loss functions
+    adversarial_loss = torch.nn.MSELoss()
+
+    # Initialize generator and discriminator
+    example_shape = (1, dataset.x.shape[1])
+    generator = Generator(opt.n_classes, opt.latent_dim, example_shape)
+    discriminator = Discriminator(opt.n_classes, example_shape)
+
+    if torch.cuda.is_available():
+        generator.cuda()
+        discriminator.cuda()
+        adversarial_loss.cuda()
+
+    # Optimizers
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+
+    checkpoint_files = {
+        "generator": opt.data_file.name.replace(".csv", ".gen.pt"),
+        "discriminator": opt.data_file.name.replace(".csv", ".disc.pt")
+    }
+
+    if opt.mode == "train":
+        train(adversarial_loss, dataloader, discriminator, generator, opt, optimizer_D, optimizer_G, checkpoint_files)
+    else:
+        eval(generator, optimizer_G, opt, checkpoint_files["generator"])
 
 
 if __name__ == "__main__":
