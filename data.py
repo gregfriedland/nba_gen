@@ -343,6 +343,7 @@ class Dataset:
 
         games = []
         all_player_id_to_player = {}
+        all_team_id_to_team = {}
         for year in years:
             for season_type in season_types:
                 player_id_to_player = {}
@@ -371,6 +372,7 @@ class Dataset:
 
                     teams = [Team(team_item["team_abbreviation"], team_id_from_int(team_item["team_id"]))
                              for team_item in full_pbpstats_game.boxscore.team_items]
+                    team_id_to_team = {t.id: t for t in teams}
                     if teams[0].id == pbpstats_game['home_team_id']:
                         home_team, away_team = teams[0], teams[1]
                     else:
@@ -383,65 +385,69 @@ class Dataset:
                     games.append(Game(year, season_type, game_id, date, home_team, away_team,
                                       list(player_id_to_player.values()), possessions))
                     all_player_id_to_player.update(player_id_to_player)
+                    all_team_id_to_team.update(team_id_to_team)
 
-        return Dataset(games, all_player_id_to_player)
+        return Dataset(games, all_team_id_to_team, all_player_id_to_player)
 
-    def __init__(self, games: Sequence[Game], player_id_to_player: Dict[str, Player]):
-        self._games = games
-        self._player_id_to_player = player_id_to_player
-
-    @property
-    def games(self):
-        return self._games
-
-    @property
-    def player_id_to_player(self):
-        return self._player_id_to_player
+    def __init__(self, games: Sequence[Game], team_id_to_team: Dict[str, Team],
+                 player_id_to_player: Dict[str, Player]):
+        self.games = games
+        self.player_id_to_player = player_id_to_player
+        self.team_id_to_team = team_id_to_team
 
 
 class DatasetToTable:
     SKIP_EVENT_TYPES = (EventType.START_OF_PERIOD, EventType.JUMP_BALL,
                         EventType.TIMEOUT, EventType.END_OF_PERIOD, EventType.REPLAY)
 
-    def __init__(self, dataset: Dataset):
+    def __init__(self, dataset: Dataset, teams_only: bool):
         self._dataset = dataset
-        self._player_id_to_name = {pid: p.name for pid, p in self._dataset.player_id_to_player.items()}
-        # self._player_name_to_id = {name: id for id, name in self._player_id_to_name.items()}
-        self._player_default_row_data = pd.Series({pid: NOT_PLAYING for pid in self._player_id_to_name.keys()})
+        self._teams_only = teams_only
+        if teams_only:
+            self._default_row_data = pd.Series({t.name: NOT_PLAYING for t in self._dataset.team_id_to_team.values()})
+        else:
+            self._default_row_data = pd.Series({pid: NOT_PLAYING for pid in self._dataset.player_id_to_player.keys()})
 
     def _event_to_row_data(self, event: Event) -> pd.Series:
-        player_row_data = self._player_default_row_data.copy()
-        player_row_data[event.offense_player_ids] = ON_OFFENSE
-        player_row_data[event.defense_player_ids] = ON_DEFENSE
+        row_data = self._default_row_data.copy()
+        if self._teams_only:
+            row_data[self._dataset.team_id_to_team[event.offense_team_id].name] = ON_OFFENSE
+            row_data[self._dataset.team_id_to_team[event.defense_team_id].name] = ON_DEFENSE
+        else:
+            row_data[event.offense_player_ids] = ON_DEFENSE
+            row_data[event.defense_player_ids] = ON_DEFENSE
+
         data = {
-             "offense_is_home": event.offense_is_home,
-             "offense_score": event.offense_score,
-             "defense_score": event.defense_score,
-             "seconds_remaining": event.seconds_remaining,
-             # "clock_secs_left": game_state.clock_secs_left,
-             "fg": event.is_fga,
-             "fg:shooter": event.shooter,
-             "fg:assister": event.assister,
-             "fg:defender":event.defender,
-             # "fg_defender_distance": event.defender_distance,
-             "fg:blocker": event.blocker,
-             "fg:is_3pa": event.shot_value == 3,
-             "fg:distance": event.shot_distance,
-             "fg:is_made": event.is_made,
-             # "foul": event.is_foul,
-             # "foul:fouler": event.fouler,
-             # "foul:foulee": event.foulee,
-             # "to": event.is_turnover,
-             # "to:turner_over": event.turner_over,
-             # "to:stealer": event.stealer,
-             # "ft": event.is_fta,
-             # "ft:is_made": event.is_made,
-             # "rebound": event.is_rebound,
-             # "rebound:rebounder": event.rebounder,
-             # "ejection": event.is_ejection,
-             # "ejection:ejectee": event.ejectee
+             "stat.offense_is_home": event.offense_is_home,
+             "stat.offense_score": event.offense_score,
+             "stat.defense_score": event.defense_score,
+             "stat.seconds_left": event.seconds_remaining,
+             # "stat.clock_secs_left": game_state.clock_secs_left,
+             "stat.fg": event.is_fga,
+             "stat.fg:is_assisted": event.is_assisted,
+             "stat.fg:is_blocked": event.is_blocked,
+             # "stat.fg:shooter": event.shooter,
+             # "stat.fg:assister": event.assister,
+             # "stat.fg:defender":event.defender,
+             # "stat.fg_defender_distance": event.defender_distance,
+             # "stat.fg:blocker": event.blocker,
+             "stat.fg:is_3pa": event.shot_value == 3,
+             "stat.fg:distance": event.shot_distance,
+             "stat.fg:is_made": event.is_made,
+             # "stat.foul": event.is_foul,
+             # "stat.foul:fouler": event.fouler,
+             # "stat.foul:foulee": event.foulee,
+             # "stat.to": event.is_turnover,
+             # "stat.to:turner_over": event.turner_over,
+             # "stat.to:stealer": event.stealer,
+             # "stat.ft": event.is_fta,
+             # "stat.ft:is_made": event.is_made,
+             # "stat.rebound": event.is_rebound,
+             # "stat.rebound:rebounder": event.rebounder,
+             # "stat.ejection": event.is_ejection,
+             # "stat.ejection:ejectee": event.ejectee
             }
-        return pd.concat([player_row_data, pd.Series(data)])
+        return pd.concat([row_data, pd.Series(data)])
 
     @property
     def df(self) -> pd.DataFrame:
@@ -458,12 +464,16 @@ class DatasetToTable:
             df[score_col] = df[score_col].astype(np.float32)
 
         # validate
-        total_players = len(self._player_default_row_data)
-        players_df = df[df.columns[:total_players]]
-        num_players_per_row = (players_df != NOT_PLAYING).sum(axis=1)
-        assert (num_players_per_row == 10).all()
-        assert (df.offense_score >= 0).all()
-        assert (df.defense_score >= 0).all()
+        num_entities = len(self._default_row_data)
+        entity_df = df[df.columns[:num_entities]]
+        num_entities_per_row = (entity_df != NOT_PLAYING).sum(axis=1)
+        if self._teams_only:
+            assert num_entities == 30
+            assert (num_entities_per_row == 2).all()
+        else:
+            assert (num_entities_per_row == 10).all()
+        assert (df["stat.offense_score"] >= 0).all()
+        assert (df["stat.defense_score"] >= 0).all()
 
         return df
 
@@ -475,10 +485,11 @@ def main():
     start_year = int(sys.argv[2])
     end_year = int(sys.argv[3])
     max_games = int(sys.argv[4])
+    teams_only = sys.argv[5].lower() == "teams"
 
     dataset = Dataset.load_from_disk(data_dir, range(start_year, end_year+1), ["Regular Season"], max_games)
-    df = DatasetToTable(dataset).df
-    df.to_csv(f"nba_pbp_{start_year}-{end_year}_n{max_games}.csv", index=False)
+    df = DatasetToTable(dataset, teams_only).df
+    df.to_csv(f"nba_pbp_{start_year}-{end_year}_n{max_games}_{'teams' if teams_only else 'players'}.csv", index=False)
 
 
 if __name__ == "__main__":
