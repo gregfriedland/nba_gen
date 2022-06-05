@@ -5,7 +5,7 @@ import os
 import random
 from collections.abc import Sequence
 from copy import copy, deepcopy
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from torchgan.losses import LeastSquaresGeneratorLoss, LeastSquaresDiscriminatorLoss
-from torchgan.models import DCGANGenerator, DCGANDiscriminator
+# from torchgan.models import DCGANGenerator, DCGANDiscriminator
 from torchgan.trainer import Trainer
 
 from data import ON_OFFENSE, ON_DEFENSE, NOT_PLAYING
@@ -298,6 +298,7 @@ from data import ON_OFFENSE, ON_DEFENSE, NOT_PLAYING
 #         'model_state_dict': discriminator.state_dict(),
 #         'optimizer_state_dict': optimizer_D.state_dict(),
 #     }, checkpoint_files["discriminator"])
+from models import PBPGenerator, PBPDiscriminator
 
 
 def main():
@@ -321,10 +322,7 @@ def main():
     torch.manual_seed(manualSeed)
 
     dataset = load_dataset()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    train(10, dataset)
+    train(num_epochs=200, dataset=dataset)
 
     # Loss functions
     # adversarial_loss = torch.nn.BCEWithLogitsLoss().to(device)
@@ -341,10 +339,10 @@ def main():
     # optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
     # optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
-    checkpoint_files = {
-        "generator": opt.data_file.name.replace(".csv", ".gen.pt"),
-        "discriminator": opt.data_file.name.replace(".csv", ".disc.pt")
-    }
+    # checkpoint_files = {
+    #     "generator": opt.data_file.name.replace(".csv", ".gen.pt"),
+    #     "discriminator": opt.data_file.name.replace(".csv", ".disc.pt")
+    # }
 
     # if opt.mode == "train":
     #     # train(adversarial_loss, dataset, discriminator, generator, opt, optimizer_D, optimizer_G, device, checkpoint_files)
@@ -353,49 +351,46 @@ def main():
     #     eval(dataset, generator, optimizer_G, opt, device, checkpoint_files["generator"])
 
 
+class ToyDataset(Dataset):
+    def __init__(self, num_events: int, event_size: int, bias: float):
+        logging.info(f"Generating ToyDataset")
+        self.data = torch.tensor(np.random.randn(num_events, event_size), dtype=torch.float32) + bias
+        logging.info(f"Done generating ToyDataset")
+        self.event_size = event_size
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], torch.tensor([])
+
+
 def load_dataset():
-    # Configure data loader
-    if False:
-        df = pd.read_csv(opt.data_file)
-        dataset = PbpDataset(df, "stat.")
-    else:
-        dataset = torchvision.datasets.MNIST(
-            root="./mnist",
-            train=True,
-            transform=torchvision.transforms.Compose(
-                [
-                    torchvision.transforms.Resize((32, 32)),
-                    torchvision.transforms.ToTensor(),
-                    torchvision.transforms.Normalize(mean=(0.5,), std=(0.5,)),
-                ]
-            ),
-            download=True,
-        )
-    return dataset
+    # df = pd.read_csv(opt.data_file)
+    # dataset = PbpDataset(df, "stat.")
+    return ToyDataset(10000, 10, 100)
 
 
 def train(num_epochs: int, dataset: Dataset):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    dcgan_network = {
+    network = {
         "generator": {
-            "name": DCGANGenerator,
+            "name": PBPGenerator,
             "args": {
                 "encoding_dims": 100,
-                "out_channels": 1,
-                "step_channels": 32,
-                "nonlinearity": nn.LeakyReLU(0.2),
-                "last_nonlinearity": nn.Tanh(),
+                "internal_size": 32,
+                "num_internal_layers": 2,
+                "event_size": 10,
             },
             "optimizer": {"name": torch.optim.Adam, "args": {"lr": 0.0001, "betas": (0.5, 0.999)}},
         },
         "discriminator": {
-            "name": DCGANDiscriminator,
+            "name": PBPDiscriminator,
             "args": {
-                "in_channels": 1,
-                "step_channels": 32,
-                "nonlinearity": nn.LeakyReLU(0.2),
-                "last_nonlinearity": nn.LeakyReLU(0.2),
+                "event_size": dataset.event_size,
+                "internal_size": 32,
+                "num_internal_layers": 2,
             },
             "optimizer": {"name": torch.optim.Adam, "args": {"lr": 0.0003, "betas": (0.5, 0.999)}},
         },
@@ -411,9 +406,11 @@ def train(num_epochs: int, dataset: Dataset):
 
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
-    Trainer(
-        dcgan_network, lsgan_losses, sample_size=64, epochs=num_epochs, device=device, log_dir="tb"
-    )(dataloader)
+    trainer = Trainer(
+        network, lsgan_losses, epochs=num_epochs, device=device, log_dir="tb", sample_size=0
+    )
+    trainer.logger.logger_end_epoch = []  # hack to disable image writing
+    trainer(dataloader)
 
 
 if __name__ == "__main__":
