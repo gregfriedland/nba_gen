@@ -298,7 +298,7 @@ from data import ON_OFFENSE, ON_DEFENSE, NOT_PLAYING
 #         'model_state_dict': discriminator.state_dict(),
 #         'optimizer_state_dict': optimizer_D.state_dict(),
 #     }, checkpoint_files["discriminator"])
-from models import PBPGenerator, PBPDiscriminator
+from models import PBPGenerator, PBPDiscriminator, PBPGeneratorLoss, PBPDiscriminatorLoss
 
 
 def main():
@@ -352,11 +352,11 @@ def main():
 
 
 class ToyDataset(Dataset):
-    def __init__(self, num_events: int, event_size: int, bias: float):
+    def __init__(self, num_events: int):
         logging.info(f"Generating ToyDataset")
-        self.data = torch.tensor(np.random.randn(num_events, event_size), dtype=torch.float32) + bias
+        self.event_size = 2
+        self.data = torch.tensor(self.generate_samples(num_events), dtype=torch.float32)
         logging.info(f"Done generating ToyDataset")
-        self.event_size = event_size
 
     def __len__(self):
         return len(self.data)
@@ -364,11 +364,26 @@ class ToyDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx], torch.tensor([])
 
+    @staticmethod
+    def toy_func_to_learn(x):
+        return x * x
+
+    @staticmethod
+    def generate_samples(n):
+        # generate random inputs in [-0.5, 0.5]
+        X1 = np.random.rand(n) - 0.5
+        # generate outputs X^2 (quadratic)
+        X2 = X1 * X1
+        # stack arrays
+        X1 = X1.reshape(n, 1)
+        X2 = X2.reshape(n, 1)
+        return np.hstack((X1, X2))
+
 
 def load_dataset():
     # df = pd.read_csv(opt.data_file)
     # dataset = PbpDataset(df, "stat.")
-    return ToyDataset(10000, 10, 100)
+    return ToyDataset(10000)
 
 
 def train(num_epochs: int, dataset: Dataset):
@@ -380,8 +395,7 @@ def train(num_epochs: int, dataset: Dataset):
             "args": {
                 "encoding_dims": 100,
                 "internal_size": 32,
-                "num_internal_layers": 2,
-                "event_size": 10,
+                "event_size": dataset.event_size,
             },
             "optimizer": {"name": torch.optim.Adam, "args": {"lr": 0.0001, "betas": (0.5, 0.999)}},
         },
@@ -390,7 +404,6 @@ def train(num_epochs: int, dataset: Dataset):
             "args": {
                 "event_size": dataset.event_size,
                 "internal_size": 32,
-                "num_internal_layers": 2,
             },
             "optimizer": {"name": torch.optim.Adam, "args": {"lr": 0.0003, "betas": (0.5, 0.999)}},
         },
@@ -402,7 +415,7 @@ def train(num_epochs: int, dataset: Dataset):
     #     WassersteinDiscriminatorLoss(),
     #     WassersteinGradientPenalty(),
     # ]
-    lsgan_losses = [LeastSquaresGeneratorLoss(), LeastSquaresDiscriminatorLoss()]
+    lsgan_losses = [PBPGeneratorLoss(), PBPDiscriminatorLoss()]
 
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 

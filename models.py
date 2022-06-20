@@ -1,7 +1,9 @@
 from math import ceil, log2
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchgan.losses import GeneratorLoss, DiscriminatorLoss
 
 from torchgan.models import Discriminator, Generator
 
@@ -11,40 +13,18 @@ class PBPGenerator(Generator):
         self,
         encoding_dims=100,
         internal_size=32,
-        num_internal_layers=2,
         event_size=10,
-        label_type="none",
     ):
-        super().__init__(encoding_dims, label_type)
-        use_bias = False
-        nl = nn.LeakyReLU(0.2)
-        last_nl = nn.Tanh()
+        super().__init__(encoding_dims, "none")
 
-        model = []
-        model.append(
-            nn.Sequential(
-                nn.Linear(self.encoding_dims, internal_size),
-                nn.BatchNorm1d(internal_size),
-                nl,
-            )
+        self.model = nn.Sequential(
+            nn.Linear(self.encoding_dims, internal_size),
+            nn.ReLU(),
+            nn.Linear(internal_size, event_size),
         )
-        for i in range(num_internal_layers):
-            model.append(
-                nn.Sequential(
-                    nn.Linear(internal_size, internal_size, bias=use_bias),
-                    nn.BatchNorm1d(internal_size),
-                    nl,
-                )
-            )
-        model.append(
-            nn.Sequential(
-                nn.Linear(internal_size, event_size, bias=True), last_nl
-            )
-        )
-        self.model = nn.Sequential(*model)
         self._weight_initializer()
 
-    def forward(self, x, feature_matching=False):
+    def forward(self, x):
         return self.model(x)
 
 
@@ -53,47 +33,33 @@ class PBPDiscriminator(Discriminator):
         self,
         event_size=10,
         internal_size=32,
-        num_internal_layers=2,
-        label_type="none",
     ):
-        super().__init__(event_size, label_type)
-        use_bias = False
-        nl = nn.LeakyReLU(0.2)
+        super().__init__(event_size, "none")
 
-        model = [
-            nn.Sequential(
-                nn.Linear(event_size, internal_size, bias=True), nl
-            )
-        ]
-        for i in range(num_internal_layers):
-            model.append(
-                nn.Sequential(
-                    nn.Linear(internal_size, internal_size),
-                    nn.BatchNorm1d(internal_size),
-                    nl,
-                )
-            )
-        model.append(nn.Sequential(
-            nn.Linear(internal_size, 1, bias=use_bias), nl
-        ))
-        self.model = nn.Sequential(*model)
+        self.model = nn.Sequential(
+            nn.Linear(event_size, internal_size),
+            nn.ReLU(),
+            nn.Linear(internal_size, 1),
+            # nn.Sigmoid()  # use binary_cross_entropy_with_logits instead
+        )
         self._weight_initializer()
 
-    def forward(self, x, feature_matching=False):
-        r"""Calculates the output tensor on passing the image ``x`` through the Discriminator.
+    def forward(self, x):
+        return self.model(x)
 
-        Args:
-            x (torch.Tensor): A 4D torch tensor of the image.
-            feature_matching (bool, optional): Returns the activation from a predefined intermediate
-                layer.
 
-        Returns:
-            A 1D torch.Tensor of the probability of each image being real.
-        """
-        x = self.model(x)
-        return x
-        # if feature_matching is True:
-        #     return x
-        # else:
-        #     x = self.disc(x)
-        #     return x.view(x.size(0))
+class PBPGeneratorLoss(GeneratorLoss):
+    def __init__(self, reduction="mean"):
+        super().__init__(reduction)
+
+    def forward(self, dgz):
+        target = torch.ones_like(dgz)
+        return F.binary_cross_entropy_with_logits(dgz, target, reduction=self.reduction)
+
+
+class PBPDiscriminatorLoss(DiscriminatorLoss):
+    def __init__(self, reduction="mean"):
+        super().__init__(reduction)
+
+    def forward(self, logits, labels):
+        return F.binary_cross_entropy_with_logits(logits, labels, reduction=self.reduction)
