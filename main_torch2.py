@@ -8,38 +8,55 @@ from matplotlib import pyplot
 
 
 # first half of array is positive + second half is negative
+# def create_real_examples(example_size: int, batch_size: int) -> (torch.Tensor, torch.Tensor):
+#     values = torch.rand((batch_size, example_size))
+#     midpoint = example_size // 2
+#     values[:, :midpoint] = np.abs(values[:, :midpoint])
+#     values[:, midpoint:] = -np.abs(values[:, midpoint:])
+#     return values, torch.ones(batch_size)
+
 def create_real_examples(example_size: int, batch_size: int) -> (torch.Tensor, torch.Tensor):
-    values = torch.rand((batch_size, example_size))
-    midpoint = example_size // 2
-    values[:, :midpoint] = np.abs(values[:, :midpoint])
-    values[:, midpoint:] = -np.abs(values[:, midpoint:])
-    return values, torch.ones(batch_size)
+    values = np.random.normal(loc=0.5, scale=0.1, size=(batch_size, example_size)).astype(dtype=np.float32)
+    return torch.tensor(values), torch.ones(batch_size)
+
+
+def examples_are_valid(examples: torch.Tensor):
+    return (np.abs(examples.mean(dim=1).detach().numpy() - 0.5) < 0.1).astype(float)
 
 
 class Generator(nn.Module):
-    def __init__(self, latent_size: int, output_size: int):
+    def __init__(self, latent_size: int, output_size: int, internal_size: int = 16):
         super(Generator, self).__init__()
-        self.dense_layer = nn.Linear(int(latent_size), int(output_size))
+        self.model = nn.Sequential(
+            nn.Linear(int(latent_size), internal_size),
+            nn.LeakyReLU(0.2),
+            nn.Linear(internal_size, int(output_size)),
+            nn.Tanh(),
+        )
 
     def forward(self, x):
-        return self.dense_layer(x)
+        return self.model(x)
 
 
 class Discriminator(nn.Module):
-    def __init__(self, example_size: int):
+    def __init__(self, example_size: int, internal_size: int = 16):
         super(Discriminator, self).__init__()
-        self.dense = nn.Linear(int(example_size), 1)
-        self.activation = nn.Sigmoid()
+        self.model = nn.Sequential(
+            nn.Linear(int(example_size), internal_size),
+            nn.LeakyReLU(0.2),
+            nn.Linear(internal_size, 1),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        return torch.squeeze(self.activation(self.dense(x)))
+        return torch.squeeze(self.model(x))
 
 
 def accuracy(pred_labels, true_labels):
     return (pred_labels.round() == true_labels).sum() / len(pred_labels)
 
 
-def train(latent_size: int = 16, example_size: int = 2, batch_size: int = 512, training_steps: int = 8000):
+def train(latent_size: int = 64, example_size: int = 2, batch_size: int = 512, training_steps: int = 2000):
     # Models
     generator = Generator(latent_size, example_size)
     discriminator = Discriminator(example_size)
@@ -83,11 +100,12 @@ def train(latent_size: int = 16, example_size: int = 2, batch_size: int = 512, t
         gen_loss.backward()
         generator_optimizer.step()
 
-        half_example = example_size // 2
-        gen_examples_valid = np.array([(gen_examples[i, half_example] >= 0).all() and
-                                       (gen_examples[i, half_example:] <= 0).all()
-                              for i in range(batch_size)])
+        # half_example = example_size // 2
+        # gen_examples_valid = np.array([(gen_examples[i, :half_example] >= 0).all() and
+        #                                (gen_examples[i, half_example:] <= 0).all()
+        #                       for i in range(batch_size)])
 
+        gen_pct_valid = examples_are_valid(gen_examples).mean()
         print(
             f"{step_num:5d} "
             f"d_real_loss={d_real_loss:.3f} "
@@ -95,10 +113,13 @@ def train(latent_size: int = 16, example_size: int = 2, batch_size: int = 512, t
             f"gen_loss={gen_loss:0.3f} "
             f"d_real_acc={d_real_acc:0.3f} "
             f"d_fake_acc={d_fake_acc:0.3f} "
-            f"gen_pct_valid={gen_examples_valid.mean():0.3f}"
+            f"gen_pct_valid={gen_pct_valid:0.3f}"
         )
-        for var in ["d_real_loss", "d_fake_loss", "gen_loss", "d_real_acc", "d_fake_acc"]:
-            metrics[var].append(locals()[var].detach().item())
+        for var in ["d_real_loss", "d_fake_loss", "gen_loss", "d_real_acc", "d_fake_acc", "gen_pct_valid"]:
+            val = locals()[var]
+            if isinstance(val, torch.Tensor):
+                val = val.detach().item()
+            metrics[var].append(val)
 
     plot_history(metrics)
 
@@ -106,7 +127,7 @@ def train(latent_size: int = 16, example_size: int = 2, batch_size: int = 512, t
 def plot_history(metrics):
     # plot loss
     pyplot.subplot(2, 1, 1)
-    for metric in ["d_real_loss", "d_fake_loss", "gen_loss"]:
+    for metric in ["d_real_loss", "d_fake_loss", "gen_loss", "gen_pct_valid"]:
         pyplot.plot(metrics[metric], label=metric)
     pyplot.legend()
 
