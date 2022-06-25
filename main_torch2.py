@@ -45,7 +45,7 @@ class Discriminator(nn.Module):
             nn.Linear(int(example_size), internal_size),
             nn.LeakyReLU(0.2),
             nn.Linear(internal_size, 1),
-            nn.Sigmoid()
+            # nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -56,17 +56,18 @@ def accuracy(pred_labels, true_labels):
     return (pred_labels.round() == true_labels).sum() / len(pred_labels)
 
 
-def train(latent_size: int = 64, example_size: int = 2, batch_size: int = 512, training_steps: int = 2000):
+def train(latent_size: int = 16, example_size: int = 2, batch_size: int = 512,
+          training_steps: int = 3000, internal_size: int = 4):
     # Models
-    generator = Generator(latent_size, example_size)
-    discriminator = Discriminator(example_size)
+    generator = Generator(latent_size, example_size, internal_size=internal_size)
+    discriminator = Discriminator(example_size, internal_size=internal_size)
 
     # Optimizers
     generator_optimizer = torch.optim.Adam(generator.parameters(), lr=0.001)
     discriminator_optimizer = torch.optim.Adam(discriminator.parameters(), lr=0.001)
 
     # loss
-    loss = nn.BCELoss()
+    loss = nn.BCEWithLogitsLoss()
 
     metrics = defaultdict(lambda: [])
     for step_num in range(training_steps):
