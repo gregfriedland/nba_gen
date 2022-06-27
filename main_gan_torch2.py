@@ -1,4 +1,5 @@
-""" 1D toy GAN example with torch """
+""" Second attempt: 1D toy GAN example with torch """
+
 from collections import defaultdict
 
 import torch

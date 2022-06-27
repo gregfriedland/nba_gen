@@ -4,3 +4,5 @@ cache
 data
 pbpstats_data.zip
 *csv
+*.pt
+__pycache

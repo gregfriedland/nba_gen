@@ -18,6 +18,7 @@ import logging
 from pbpstats.client import Client
 from enum import Enum
 
+NO_TEAM = "na"
 NO_PLAYER = "na"
 ON_DEFENSE = "def"
 ON_OFFENSE = "off"
@@ -27,11 +28,17 @@ TEAM_ID_PREFIX = "t"
 
 
 def player_id_from_int(player_id: int) -> str:
-    return f"{PLAYER_ID_PREFIX}{player_id}"
+    if player_id == 0:
+        return NO_PLAYER
+    else:
+        return f"{PLAYER_ID_PREFIX}{player_id}"
 
 
 def team_id_from_int(team_id: int) -> str:
-    return f"{TEAM_ID_PREFIX}{team_id}"
+    if team_id < 10000:
+        return NO_TEAM
+    else:
+        return f"{TEAM_ID_PREFIX}{team_id}"
 
 
 def int_from_team_id(team_id: str) -> int:
@@ -108,6 +115,25 @@ class Player:
 class Possession:
     events: List[Event]
 
+    @property
+    def cleaned_events(self):
+        offense_events = [e for e in self.events if e.type in Event.OFFENSE_EVENT_TYPES and
+                          not (e.is_technical_foul or e.is_technical_fta or e.is_double_foul)]
+        if len(offense_events) == 0:
+            return None
+        # elif len(offense_events) == 1 and offense_events[0].type == EventType.END_OF_PERIOD:
+        #     return None
+        # if event.type == EventType.FOUL and event.offense_team_id == NO_TEAM:
+
+        orig_offense_team_id = offense_events[0].offense_team_id
+        last_offense_event = [e for e in self.events if e.offense_team_id == orig_offense_team_id][-1]
+        for event in self.events:
+            # override lineup_ids for free throw events to correct for substitutions
+            if event.type == EventType.FREE_THROW:
+                event.override_lineup_ids(last_offense_event)
+
+        return offense_events
+
 
 @dataclass
 class Game:
@@ -126,21 +152,24 @@ class Game:
     def get_player(self, player_id: str):
         return self._player_id_to_player[player_id]
 
-    @property
-    def events(self):
-        for possession in self.possessions:
-            offense_events = [e for e in possession.events if e.offense_team_id]
-            if len(offense_events) == 0:
-                continue
-
-            orig_offense_team_id = offense_events[0].offense_team_id
-            last_offense_event = [e for e in possession.events if e.offense_team_id == orig_offense_team_id][-1]
-            for event in possession.events:
-                # override lineup_ids for free throw events to correct for substitutions
-                if event.type == EventType.FREE_THROW:
-                    event.override_lineup_ids(last_offense_event)
-
-                yield event
+    # @property
+    # def cleaned_possessions(self):
+    #     for possession in self.possessions:
+    #         offense_events = [e for e in possession.events if e.type in Event.OFFENSE_EVENT_TYPES]
+    #         if len(offense_events) == 0:
+    #             continue
+    #         elif len(offense_events) == 1 and offense_events[0].type == EventType.END_OF_PERIOD:
+    #             continue
+    #         # if event.type == EventType.FOUL and event.offense_team_id == NO_TEAM:
+    #
+    #         orig_offense_team_id = offense_events[0].offense_team_id
+    #         last_offense_event = [e for e in possession.events if e.offense_team_id == orig_offense_team_id][-1]
+    #         for event in possession.events:
+    #             # override lineup_ids for free throw events to correct for substitutions
+    #             if event.type == EventType.FREE_THROW:
+    #                 event.override_lineup_ids(last_offense_event)
+    #
+    #         yield Possession(offense_events)
 
 
 class EventType(Enum):
@@ -160,7 +189,8 @@ class EventType(Enum):
 
 
 class Event:
-    OFFENSE_EVENT_TYPES = (EventType.FIELD_GOAL, EventType.FREE_THROW, EventType.REBOUND, EventType.TURNOVER, EventType.START_OF_PERIOD, EventType.JUMP_BALL)
+    OFFENSE_EVENT_TYPES = (EventType.FIELD_GOAL, EventType.FREE_THROW, EventType.REBOUND, EventType.TURNOVER,
+                           EventType.END_OF_PERIOD, EventType.FOUL)
 
     def __init__(self, pbpstats_event, home_team_id: str):
         self.pbpstats_event = pbpstats_event
@@ -178,12 +208,24 @@ class Event:
         return self.type == EventType.FREE_THROW
 
     @property
+    def is_technical_foul(self) -> bool:
+        return self.type == EventType.FOUL and getattr(self.pbpstats_event, "is_technical", False)
+
+    @property
+    def is_double_foul(self) -> bool:
+        return self.type == EventType.FOUL and getattr(self.pbpstats_event, "is_double_foul", False)
+
+    @property
+    def is_technical_fta(self) -> bool:
+        return self.type == EventType.FREE_THROW and getattr(self.pbpstats_event, "is_technical_ft", False)
+
+    @property
     def is_and1(self) -> bool:
-        return self.is_fga and getattr(self.pbpstats_event, "is_and1", None)
+        return self.is_fga and getattr(self.pbpstats_event, "is_and1", False)
 
     @property
     def is_heave(self) -> bool:
-        return getattr(self.pbpstats_event, "is_heave", None)
+        return getattr(self.pbpstats_event, "is_heave", False)
 
     @property
     def is_foul(self):
@@ -195,19 +237,35 @@ class Event:
 
     @property
     def is_blocked(self):
-        return getattr(self.pbpstats_event, "is_blocked", None)
+        return getattr(self.pbpstats_event, "is_blocked", False)
 
     @property
     def is_assisted(self):
-        return getattr(self.pbpstats_event, "is_assisted", None)
+        return getattr(self.pbpstats_event, "is_assisted", False)
 
     @property
     def is_rebound(self):
-        return self.type == EventType.REBOUND and getattr(self.pbpstats_event, "is_real_rebound", None)
+        return self.type == EventType.REBOUND and getattr(self.pbpstats_event, "is_real_rebound", False)
 
     @property
     def is_ejection(self):
         return self.type == EventType.EJECTION
+
+    @property
+    def is_offensive_rebound(self) -> bool:
+        return getattr(self.pbpstats_event, "oreb", False)
+
+    @property
+    def is_offensive_foul(self) -> bool:
+        return getattr(self.pbpstats_event, "is_charge", False) or getattr(self.pbpstats_event, "is_offensive_foul", False)
+
+    @property
+    def is_defensive_foul(self) -> bool:
+        return self.is_foul and not self.is_offensive_foul
+
+    @property
+    def is_end_of_period(self) -> bool:
+        return self.type == EventType.END_OF_PERIOD
 
     @property
     def player1(self) -> Optional[str]:
@@ -271,21 +329,35 @@ class Event:
         return self.player1 if self.is_ejection else NO_PLAYER
 
     @property
-    def offense_team_id(self) -> Optional[str]:
+    def other_team_id(self) -> str:
+        if self.team_id == NO_TEAM:
+            return NO_TEAM
+
+        team_ids = set(map(team_id_from_int, self.pbpstats_event.current_players.keys()))
+        team_ids.remove(self.team_id)
+        assert len(team_ids) == 1
+        return team_ids.pop()
+
+    @property
+    def team_id(self) -> str:
         if hasattr(self.pbpstats_event, "team_id"):
             return team_id_from_int(self.pbpstats_event.team_id)
         else:
-            return None
+            return NO_TEAM
+
+    @property
+    def offense_team_id(self) -> str:
+        if self.is_defensive_foul:
+            return self.team_id
+        else:
+            return self.other_team_id
 
     @property
     def defense_team_id(self) -> Optional[str]:
-        offense_team_id = self.offense_team_id
-        if offense_team_id:
-            team_ids = set(map(team_id_from_int, self.pbpstats_event.current_players.keys()))
-            team_ids.remove(offense_team_id)
-            return team_ids.pop()
+        if self.is_defensive_foul:
+            return self.other_team_id
         else:
-            return None
+            return self.team_id
 
     @property
     def offense_is_home(self) -> bool:
@@ -301,7 +373,7 @@ class Event:
 
     @property
     def is_made(self) -> Optional[bool]:
-        return getattr(self.pbpstats_event, "is_made", None)
+        return getattr(self.pbpstats_event, "is_made", False)
 
     def override_lineup_ids(self, event: Event):
         self._lineup_ids = event._lineup_ids
@@ -323,9 +395,15 @@ class Event:
         return self.pbpstats_event.score[int_from_team_id(self.defense_team_id)]
 
     @property
-    def seconds_remaining(self) -> float:
+    def secs_left(self) -> float:
         return self.pbpstats_event.seconds_remaining
 
+    @property
+    def period(self) -> int:
+        return self.pbpstats_event.period
+
+    def __repr__(self):
+        return f"{self.type}: offense={self.offense_team_id}"
 
 class Dataset:
     """ Multiple NBA games """
@@ -397,6 +475,10 @@ class Dataset:
 
 
 class DatasetToTable:
+    """
+    Convert Dataset to table representation with format:
+    ORL,NOP,...,stat.offense_is_home,stat.offense_score,stat.defense_score,stat.seconds_left,stat.fg,stat.fg:is_assisted,stat.fg:is_blocked,stat.fg:is_3pa,stat.fg:distance,stat.fg:is_made
+    """
     SKIP_EVENT_TYPES = (EventType.START_OF_PERIOD, EventType.JUMP_BALL,
                         EventType.TIMEOUT, EventType.END_OF_PERIOD, EventType.REPLAY)
 
@@ -478,18 +560,125 @@ class DatasetToTable:
         return df
 
 
+class DatasetToTable2:
+    """
+    Convert Dataset to table with format:
+    Off team, Def team, Off is home?, Quarter num, Quarter time left, Num off rebounds, Num shots blocked, Num def fouls,
+        Num FTAs, Was shot made?, Was turnover stolen?, Was fg assisted?, End type,	Shot clock secs left, Shot distance, Shot is 3pa?
+    End type = FGM, Def rebound, turnover, offensive foul, end of quarter (skip)
+
+    """
+    @staticmethod
+    def _get_single_event_value(events: List[Event], field: str):
+        unique_vals = set(getattr(e, field) for e in events)
+        if len(unique_vals) != 1:
+            raise ValueError(f"Expected exactly 1 value of '{field}' from events but got: {unique_vals}")
+        return unique_vals.pop()
+
+    def __init__(self, dataset: Dataset):
+        self._dataset = dataset
+        self._default_row_data = pd.Series({t.name: NOT_PLAYING for t in self._dataset.team_id_to_team.values()})
+
+    def _events_to_row_data(self, events: List[Event]) -> pd.Series:
+        row_data = self._default_row_data.copy()
+        off_team_id = events[0].offense_team_id
+        def_team_id = events[0].defense_team_id
+        off_is_home = events[0].offense_is_home
+
+        num_off_rebounds = len([e for e in events if e.is_offensive_rebound])
+        num_shots_blocked = len([e for e in events if e.is_blocked])
+        num_def_fouls = len([e for e in events if e.is_defensive_foul])
+        num_ftas = len([e for e in events if e.is_fta])
+        num_ftms = len([e for e in events if e.is_fta and e.is_made])
+
+        row_data[self._dataset.team_id_to_team[off_team_id].name] = ON_OFFENSE
+        row_data[self._dataset.team_id_to_team[def_team_id].name] = ON_DEFENSE
+
+        if events[-1].is_offensive_rebound:
+            logging.warning(f"Unexpected offensive rebound as last event")
+        if events[-1].is_defensive_foul:
+            logging.warning(f"Unexpected defensive foul as last event")
+        if events[0].secs_left > 12 * 60:
+            logging.warning(f"Unexpected secs left > 12min")
+
+        data = {
+            "stat.offense_is_home": off_is_home,
+            "stat.period": events[0].period,
+            "stat.period_secs_left": events[0].secs_left,
+            "stat.num_off_rebounds": num_off_rebounds,
+            "stat.num_shots_blocked": num_shots_blocked,
+            "stat.num_def_fouls": num_def_fouls,
+            "stat.num_ftas": num_ftas,
+            "stat.num_ftms": num_ftms,
+
+            "stat.fg_is_made": events[-1].is_made,
+            "stat.fg_is_assisted": events[-1].is_assisted,
+            "stat.fg_is_3pa": events[-1].shot_value == 3,
+            "stat.fg_distance": events[-1].shot_distance or 0,
+            "stat.to_is_stolen": events[-1].stealer != NO_PLAYER,
+
+            "stat.end_is_foul": events[-1].is_foul,
+            "stat.end_is_fga": events[-1].is_fga,
+            "stat.end_is_to": events[-1].is_turnover,
+            "stat.end_is_blocked": events[-1].is_blocked,
+            "stat.end_is_def_rebound": events[-1].is_rebound,
+            "stat.end_is_period_over": events[-1].is_end_of_period,
+
+            "stat.off_score_margin": events[0].offense_score - events[0].defense_score,
+        }
+        return pd.concat([row_data, pd.Series(data)])
+
+    @property
+    def df(self) -> pd.DataFrame:
+        logging.info(f"Converting Dataset to table")
+
+        rows = []
+        for game in self._dataset.games:
+            last_possession = None
+            for possession in game.possessions:
+                cleaned_events = possession.cleaned_events
+                if cleaned_events is None:
+                    continue
+                elif set(e.type for e in cleaned_events) == {EventType.END_OF_PERIOD}:
+                    last_possession = None
+                    continue
+
+                logging.debug(possession)
+                rows.append(self._events_to_row_data(cleaned_events))
+
+                # sanity check that possessions alternate offense teams
+                if last_possession and last_possession.cleaned_events[0].offense_team_id == cleaned_events[0].offense_team_id:
+                    logging.warning(f"Offense team did not change between possessions")
+                if cleaned_events[-1].type == EventType.END_OF_PERIOD:
+                    last_possession = None
+                else:
+                    last_possession = possession
+        df = pd.concat(rows, ignore_index=True, axis=1).T
+        for score_col in [col for col in df.columns if "score" in col]:
+            df[score_col] = df[score_col].astype(np.float32)
+
+        # validate
+        num_entities = len(self._default_row_data)
+        entity_df = df[df.columns[:num_entities]]
+        num_entities_per_row = (entity_df != NOT_PLAYING).sum(axis=1)
+        assert num_entities == 30
+        assert (num_entities_per_row == 2).all()
+
+        return df
+
+
 def main():
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
 
     data_dir = sys.argv[1]
     start_year = int(sys.argv[2])
     end_year = int(sys.argv[3])
     max_games = int(sys.argv[4])
-    teams_only = sys.argv[5].lower() == "teams"
+    # teams_only = sys.argv[5].lower() == "teams"
 
     dataset = Dataset.load_from_disk(data_dir, range(start_year, end_year+1), ["Regular Season"], max_games)
-    df = DatasetToTable(dataset, teams_only).df
-    df.to_csv(f"nba_pbp_{start_year}-{end_year}_n{max_games}_{'teams' if teams_only else 'players'}.csv", index=False)
+    df = DatasetToTable2(dataset).df
+    df.to_csv(f"nba_pbp_{start_year}-{end_year}_n{max_games}.csv", index=False)
 
 
 if __name__ == "__main__":

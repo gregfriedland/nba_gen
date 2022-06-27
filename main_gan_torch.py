@@ -1,3 +1,5 @@
+""" First attempt to implement a conditional gan with pytorch on nba data + toy data """
+
 # https://github.com/eriklindernoren/PyTorch-GAN/blob/master/implementations/cgan/cgan.py
 import argparse
 import logging
